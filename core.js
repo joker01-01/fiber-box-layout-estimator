@@ -512,6 +512,49 @@
     return out;
   }
 
+  // 生成 CSV 工程量清单（UTF-8 BOM，便于 Excel 直接打开）
+  // d: {result, households, existingBoxes, poleSpacing, mPerPx}
+  function buildCSV(d) {
+    const result = d && d.result;
+    if (!result || !Array.isArray(result.boxes)) throw new Error('缺少有效的计算结果');
+    const households = Array.isArray(d.households) ? d.households : [];
+    const existingBoxes = Array.isArray(d.existingBoxes) ? d.existingBoxes : [];
+    const mPerPx = Number(d.mPerPx) > 0 ? Number(d.mPerPx) : 0;
+    const rows = [];
+    rows.push(['项目', '数值']);
+    rows.push(['模式', result.mode === 'brownfield' ? '有箱补点' : '无箱新建']);
+    rows.push(['分纤箱数量（合计）', result.boxes.length + (result.mode === 'brownfield' ? existingBoxes.length : 0)]);
+    rows.push(['分纤箱数量（新增）', result.boxes.length]);
+    rows.push(['覆盖户数', result.coveredCount + '/' + households.length]);
+    rows.push(['未覆盖户数', Array.isArray(result.uncovered) ? result.uncovered.length : 0]);
+    rows.push(['主干光缆长度（米）', result.cableLengthM == null ? '' : result.cableLengthM]);
+    rows.push(['新增光缆长度（米）', result.addedCableM == null ? '' : result.addedCableM]);
+    rows.push(['杆子根数', result.poleCount == null ? '' : result.poleCount]);
+    rows.push(['杆距（米）', Number(d.poleSpacing) > 0 ? Number(d.poleSpacing) : '']);
+    rows.push([]);
+    rows.push(['每箱明细']);
+    rows.push(['箱号', '类型', '覆盖户数', 'X(米)', 'Y(米)', '到进村点光缆(米)', '覆盖户号']);
+    if (result.mode === 'brownfield') {
+      existingBoxes.forEach((box, index) => {
+        rows.push([
+          'E' + (index + 1), '已有', '',
+          (Number(box.x) * mPerPx).toFixed(1),
+          (Number(box.y) * mPerPx).toFixed(1), '', ''
+        ]);
+      });
+    }
+    for (const box of result.boxes) {
+      rows.push([
+        box.id, '新增', Array.isArray(box.assigned) ? box.assigned.length : 0,
+        box.xM, box.yM, box.entM == null ? '' : box.entM,
+        Array.isArray(box.assigned) ? box.assigned.map((index) => Number(index) + 1).join(';') : ''
+      ]);
+    }
+    return '\uFEFF' + rows.map((row) => row.map((cell) =>
+      '"' + String(cell).replace(/"/g, '""') + '"'
+    ).join(',')).join('\r\n');
+  }
+
   // 生成示意 DXF（字符串）
   // d: {roads, households, entrance, existingBoxes, boxes, routeEdges, nodes, mPerPx, polePoints}
   function buildDXF(d) {
@@ -519,7 +562,12 @@
     function layerDef(name, color) {
       lines.push('0', 'LAYER', '2', name, '70', '0', '62', String(color), '6', 'CONTINUOUS');
     }
-    lines.push('0', 'SECTION', '2', 'HEADER', '9', '$ACADVER', '1', 'AC1009', '0', 'ENDSEC');
+    lines.push(
+      '0', 'SECTION', '2', 'HEADER',
+      '9', '$ACADVER', '1', 'AC1015',
+      '9', '$INSUNITS', '70', '6',
+      '0', 'ENDSEC'
+    );
     lines.push('0', 'SECTION', '2', 'TABLES', '0', 'TABLE', '2', 'LAYER', '70', '8');
     lines.push('0', 'LAYER', '2', '0', '70', '0', '62', '7', '6', 'CONTINUOUS');
     layerDef('ROAD', 5); layerDef('CABLE', 1); layerDef('BOX', 3);
@@ -579,6 +627,7 @@
     projectToSegment: projectToSegment,
     projectToSegments: projectToSegments,
     segLen: segLen,
+    buildCSV: buildCSV,
     buildDXF: buildDXF
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = global.FiberCore;

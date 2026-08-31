@@ -361,6 +361,7 @@ input:focus-visible, select:focus-visible {
 .tool-box .tool-dot { color: #9256a7; border-radius: 2px; }
 .tool-calib .tool-dot { color: #d1a225; }
 .tool-pan .tool-dot { color: #6b898b; }
+.tool-erase .tool-dot { color: #bd5530; border-radius: 2px; transform: rotate(45deg); }
 .tool-actions { display: grid; grid-template-columns: 1fr 1.5fr; gap: 7px; margin-top: 10px; }
 .button-outline { background: transparent; border-color: #cbd2cc; color: var(--ink-soft); }
 .button-outline:hover { background: #fff; }
@@ -491,7 +492,19 @@ input:focus-visible, select:focus-visible {
 .map-legend span { display: flex; align-items: center; gap: 4px; }
 .map-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
 .legend-road { background: #1f6fb2; }
+.map-legend .legend-inferred {
+  width: 16px;
+  height: 3px;
+  border-radius: 0;
+  background: repeating-linear-gradient(90deg, #f39c12 0 5px, transparent 5px 8px);
+}
 .legend-house { background: #e07b00; }
+.map-legend .legend-review-house {
+  width: 8px;
+  height: 8px;
+  border: 2px solid #d63031;
+  background: transparent;
+}
 .legend-box { background: #27ae60; }
 .legend-cable { background: #c0392b; }
 #statusBar {
@@ -569,6 +582,35 @@ input:focus-visible, select:focus-visible {
 .modal-box h3 { color: var(--ink); font-size: 18px; }
 .modal-box p { color: var(--ink-soft); font-size: 12px; }
 .modal-box label { color: var(--ink-soft); }
+.modal-box-wide { width: min(560px, calc(100vw - 30px)); max-height: calc(100vh - 30px); overflow: auto; }
+.modal-file { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dxf-import-summary {
+  margin: 10px 0 14px;
+  padding: 10px 12px;
+  border: 1px solid #d7ded9;
+  border-radius: 6px;
+  background: #f6f9f7;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.dxf-import-summary strong { color: var(--ink); }
+.dxf-import-summary .warning { color: #bd5530; }
+.dxf-layer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.dxf-layer-grid label { display: block; margin: 0; font-size: 11px; }
+.dxf-layer-grid select, .dxf-layer-grid input { width: 100%; margin-top: 5px; }
+.dxf-layer-grid small { display: block; margin-top: 3px; color: #8a97a6; }
+.dxf-block-rules {
+  margin-top: 12px;
+  padding: 9px 11px;
+  border: 1px solid #d7ded9;
+  border-radius: 6px;
+  background: #fbfcfa;
+}
+.dxf-block-rules summary { color: var(--ink); font-size: 12px; font-weight: 700; cursor: pointer; }
+.dxf-block-rules p { margin: 8px 0; font-size: 11px; line-height: 1.5; }
+.modal-note { margin-top: 12px; line-height: 1.6; }
+.dxf-import-actions { margin-top: 14px; }
 
 @media (max-width: 1120px) {
   .workspace { grid-template-columns: 245px minmax(360px, 1fr) 290px; }

@@ -47,6 +47,7 @@
           <button data-tool="box" class="tool-btn tool-box" aria-pressed="false"><span class="tool-dot"></span><span><strong>已有箱</strong><small>补点模式</small></span></button>
           <button data-tool="calib" class="tool-btn tool-calib" aria-pressed="false"><span class="tool-dot"></span><span><strong>比例校准</strong><small>建立米制</small></span></button>
           <button data-tool="pan" class="tool-btn tool-pan" aria-pressed="false"><span class="tool-dot"></span><span><strong>平移</strong><small>查看地图</small></span></button>
+          <button data-tool="erase" class="tool-btn tool-erase" aria-pressed="false"><span class="tool-dot"></span><span><strong>删除</strong><small>点选误识别</small></span></button>
         </div>
         <div class="tool-actions">
           <button id="btnUndo" class="button button-outline">撤销</button>
@@ -107,7 +108,9 @@
       <canvas id="mapCanvas"></canvas>
       <div class="map-legend" aria-label="图例">
         <span><i class="legend-road"></i>路网</span>
+        <span><i class="legend-inferred"></i>推断补桥</span>
         <span><i class="legend-house"></i>户点</span>
+        <span><i class="legend-review-house"></i>离路复核</span>
         <span><i class="legend-box"></i>箱位</span>
         <span><i class="legend-cable"></i>光缆</span>
       </div>
@@ -153,8 +156,43 @@
     </div>
   </div>
 
+  <div id="dxfImportModal" class="modal hidden">
+    <div class="modal-box modal-box-wide">
+      <h3>复核 DXF 自动识别</h3>
+      <p id="dxfImportFile" class="modal-file"></p>
+      <div id="dxfImportSummary" class="dxf-import-summary"></div>
+      <div class="dxf-layer-grid">
+        <label>道路图层<select id="dxfRoadLayer"></select></label>
+        <label>道路类型<select id="dxfRoadMode"><option value="auto">自动判断</option><option value="centerline">已有中心线</option><option value="edges">双边线</option></select></label>
+        <label>民房图层<select id="dxfHouseLayer"></select></label>
+        <label>已有箱图层<select id="dxfBoxLayer"></select></label>
+        <label>新设箱图层<select id="dxfPlannedBoxLayer"></select></label>
+        <label>电杆图层<select id="dxfPoleLayer"></select></label>
+        <label>离路复核阈值<input type="number" id="dxfReviewDistance" value="30" min="0.1" step="1"><small>图纸单位</small></label>
+      </div>
+      <details class="dxf-block-rules">
+        <summary>图块名称规则（可选）</summary>
+        <p>多个名称用逗号或分号分隔，按完整图块名匹配；填写后，该角色只采用匹配的图块插入点。</p>
+        <div class="dxf-layer-grid">
+          <label>民房图块名<input type="text" id="dxfHouseBlocks" placeholder="例如 HOUSE_A, 民房"></label>
+          <label>已有箱图块名<input type="text" id="dxfExistingBoxBlocks" placeholder="例如 EXIST_BOX"></label>
+          <label>新设箱图块名<input type="text" id="dxfPlannedBoxBlocks" placeholder="例如 NEW_BOX"></label>
+          <label>电杆图块名<input type="text" id="dxfPoleBlocks" placeholder="例如 POLE, 原有木杆"></label>
+          <label>进村点图块名<input type="text" id="dxfEntranceBlocks" placeholder="例如 ENTRY, 光交箱"></label>
+        </div>
+      </details>
+      <p class="modal-note">“自动识别”使用文字与几何规则；已有道路中心线时，请指定道路图层并选择“已有中心线”后重新识别。已有箱和新设箱规则彼此独立。橙色虚线是推断补桥，红圈户点超过离路复核阈值；两者都必须人工检查。</p>
+      <div class="row dxf-import-actions">
+        <button id="dxfRerun">重新识别</button>
+        <button id="dxfCancel">取消导入</button>
+        <button id="dxfConfirm" class="primary">确认导入</button>
+      </div>
+    </div>
+  </div>
+
   <script src="core.js"></script>
   <script src="dxf-lite.js"></script>
+  <script src="cad-import.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

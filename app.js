@@ -12,7 +12,9 @@
     imageH: 0,
     calibration: null,      // {px, meters, p1, p2}
     roads: [],              // 每段路：[{x,y}, ...]
+    inferredRoadIndexes: [], // 自动补桥道路在 roads 中的索引（需人工复核）
     households: [],         // [{x,y}]
+    roadReviewDistance: null, // CAD 户点离路复核阈值（图纸单位）
     entrance: null,         // {x,y}
     existingBoxes: [],      // [{x,y}]
     cadPolePoints: [],      // DXF 中识别到的杆位（仅作图纸参考）
@@ -29,6 +31,7 @@
   const view = { cx: 0, cy: 0, scale: 1 };
 
   let canvas, ctx, wrap, dpr;
+  let pendingDxfImport = null;
 
   /* ---------- 启动 ---------- */
 
@@ -86,7 +89,12 @@
       e.target.value = '';
     });
     $('btnClearAll').addEventListener('click', clearAll);
-    $('btnClearRoads').addEventListener('click', () => { state.roads = []; state.history = []; invalidate(); });
+    $('btnClearRoads').addEventListener('click', () => {
+      state.roads = [];
+      state.inferredRoadIndexes = [];
+      state.history = [];
+      invalidate();
+    });
     $('btnClearHouses').addEventListener('click', () => { state.households = []; state.history = []; invalidate(); });
     $('btnClearBoxes').addEventListener('click', () => { state.existingBoxes = []; state.history = []; invalidate(); });
     $('btnClearCalib').addEventListener('click', () => { state.calibration = null; state.history = []; invalidate(); });
@@ -125,6 +133,9 @@
       hideModal();
       draw();
     });
+    $('dxfRerun').addEventListener('click', rerunDxfRecognition);
+    $('dxfCancel').addEventListener('click', cancelDxfImport);
+    $('dxfConfirm').addEventListener('click', confirmDxfImport);
 
     // 画布
     canvas.addEventListener('mousedown', onMouseDown);
@@ -135,6 +146,10 @@
     canvas.addEventListener('dblclick', (e) => { if (state.tool === 'road') { e.preventDefault(); finishRoad(); } });
     window.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
+        if (pendingDxfImport) {
+          cancelDxfImport();
+          return;
+        }
         state.currentRoad = [];
         state.calibP1 = null;
         state.calibStart = null;
@@ -226,6 +241,9 @@
           showModal();
         }
         break;
+      case 'erase':
+        eraseAt(pt);
+        break;
     }
   }
 
@@ -259,6 +277,41 @@
     if (state.history.length > 500) state.history.shift();
   }
 
+  function normalizeInferredRoadIndexes(indexes, roadCount) {
+    if (!Array.isArray(indexes)) return [];
+    return Array.from(new Set(indexes
+      .map(Number)
+      .filter((index) => Number.isInteger(index) && index >= 0 && index < roadCount)
+    )).sort((a, b) => a - b);
+  }
+
+  function currentHouseholdRoadAudit() {
+    if (!(state.roadReviewDistance > 0) || !state.households.length) return null;
+    return CadImport.auditHouseholdRoadDistances(
+      state.households,
+      state.roads,
+      state.roadReviewDistance
+    );
+  }
+
+  function removeRoadAt(index) {
+    const inferred = state.inferredRoadIndexes.includes(index);
+    state.roads.splice(index, 1);
+    state.inferredRoadIndexes = state.inferredRoadIndexes
+      .filter((roadIndex) => roadIndex !== index)
+      .map((roadIndex) => roadIndex > index ? roadIndex - 1 : roadIndex);
+    return inferred;
+  }
+
+  function insertRoadAt(index, road, inferred) {
+    state.roads.splice(index, 0, road);
+    const indexes = state.inferredRoadIndexes.map((roadIndex) =>
+      roadIndex >= index ? roadIndex + 1 : roadIndex
+    );
+    if (inferred) indexes.push(index);
+    state.inferredRoadIndexes = normalizeInferredRoadIndexes(indexes, state.roads.length);
+  }
+
   function undo() {
     if (state.tool === 'road' && state.currentRoad.length) {
       state.currentRoad.pop();
@@ -273,7 +326,43 @@
       case 'entrance': state.entrance = h.before || null; break;
       case 'box': state.existingBoxes.pop(); break;
       case 'calib': state.calibration = h.before || null; break;
+      case 'erase':
+        if (h.target === 'entrance') state.entrance = h.value;
+        else if (h.target === 'roads') insertRoadAt(h.index, h.value, h.inferredRoad);
+        else if (Array.isArray(state[h.target])) state[h.target].splice(h.index, 0, h.value);
+        break;
     }
+    invalidate();
+  }
+
+  function eraseAt(pt) {
+    const tolerance = 14 / view.scale;
+    let best = null;
+    function consider(target, index, value, distance) {
+      if (distance <= tolerance && (!best || distance < best.distance)) {
+        best = { target: target, index: index, value: value, distance: distance };
+      }
+    }
+    state.households.forEach((point, index) => consider('households', index, point, dist(pt, point)));
+    state.existingBoxes.forEach((point, index) => consider('existingBoxes', index, point, dist(pt, point)));
+    state.cadPolePoints.forEach((point, index) => consider('cadPolePoints', index, point, dist(pt, point)));
+    state.cadPlannedBoxes.forEach((point, index) => consider('cadPlannedBoxes', index, point, dist(pt, point)));
+    if (state.entrance) consider('entrance', -1, state.entrance, dist(pt, state.entrance));
+    state.roads.forEach((road, index) => {
+      let roadDistance = Infinity;
+      for (let i = 0; i + 1 < road.length; i++) {
+        roadDistance = Math.min(roadDistance, FiberCore.projectToSegment(pt, road[i], road[i + 1]).d);
+      }
+      consider('roads', index, road, roadDistance);
+    });
+    if (!best) {
+      $('statusBar').textContent = '未选中对象；请靠近户点、道路、入口或箱杆参考点点击。';
+      return;
+    }
+    if (best.target === 'entrance') state.entrance = null;
+    else if (best.target === 'roads') best.inferredRoad = removeRoadAt(best.index);
+    else state[best.target].splice(best.index, 1);
+    historyPush('erase', best);
     invalidate();
   }
 
@@ -305,7 +394,9 @@
     state.imageH = 0;
     state.calibration = null;
     state.roads = [];
+    state.inferredRoadIndexes = [];
     state.households = [];
+    state.roadReviewDistance = null;
     state.entrance = null;
     state.existingBoxes = [];
     state.cadPolePoints = [];
@@ -439,13 +530,20 @@
     g.lineWidth = lw(3);
     g.lineJoin = 'round';
     g.lineCap = 'round';
-    for (const road of state.roads) {
+    const inferredRoads = new Set(state.inferredRoadIndexes);
+    for (let roadIndex = 0; roadIndex < state.roads.length; roadIndex++) {
+      const road = state.roads[roadIndex];
       if (road.length < 2) continue;
+      const inferred = inferredRoads.has(roadIndex);
+      g.setLineDash(inferred ? [lw(8), lw(5)] : []);
+      g.strokeStyle = inferred ? '#f39c12' : '#1f6fb2';
+      g.lineWidth = lw(inferred ? 4 : 3);
       g.beginPath();
       g.moveTo(road[0].x, road[0].y);
       for (let i = 1; i < road.length; i++) g.lineTo(road[i].x, road[i].y);
       g.stroke();
     }
+    g.setLineDash([]);
     // 当前路
     if (state.currentRoad.length) {
       g.setLineDash([lw(8), lw(6)]);
@@ -466,8 +564,11 @@
       g.fill();
     }
 
-    // 户点
-    for (const h of state.households) {
+    // 户点；红色外圈表示超过 CAD 导入时设置的离路复核阈值。
+    const roadAudit = currentHouseholdRoadAudit();
+    const reviewHouseholds = new Set(roadAudit ? roadAudit.farIndexes : []);
+    for (let houseIndex = 0; houseIndex < state.households.length; houseIndex++) {
+      const h = state.households[houseIndex];
       g.fillStyle = '#e07b00';
       g.strokeStyle = '#fff';
       g.lineWidth = lw(1.5);
@@ -475,6 +576,13 @@
       g.arc(h.x, h.y, r(4), 0, Math.PI * 2);
       g.fill();
       g.stroke();
+      if (reviewHouseholds.has(houseIndex)) {
+        g.strokeStyle = '#d63031';
+        g.lineWidth = lw(2.5);
+        g.beginPath();
+        g.arc(h.x, h.y, r(8), 0, Math.PI * 2);
+        g.stroke();
+      }
     }
 
     // 进村点
@@ -623,30 +731,14 @@
   function exportCsv() {
     const res = state.results;
     if (!res) { alert('请先计算布点'); return; }
-    const rows = [];
-    rows.push(['项目', '数值']);
-    rows.push(['模式', res.mode === 'brownfield' ? '有箱补点' : '无箱新建']);
-    rows.push(['分纤箱数量（合计）', res.boxes.length + (res.mode === 'brownfield' ? state.existingBoxes.length : 0)]);
-    rows.push(['分纤箱数量（新增）', res.boxes.length]);
-    rows.push(['覆盖户数', res.coveredCount + '/' + state.households.length]);
-    rows.push(['未覆盖户数', res.uncovered.length]);
-    rows.push(['主干光缆长度（米）', res.cableLengthM == null ? '' : res.cableLengthM]);
-    rows.push(['新增光缆长度（米）', res.addedCableM == null ? '' : res.addedCableM]);
-    rows.push(['杆子根数', res.poleCount == null ? '' : res.poleCount]);
-    rows.push(['杆距（米）', state.params.poleSpacing]);
-    rows.push([]);
-    rows.push(['每箱明细']);
-    rows.push(['箱号', '类型', '覆盖户数', 'X(米)', 'Y(米)', '到进村点光缆(米)', '覆盖户号']);
     const mPerPx = state.calibration ? state.calibration.meters / state.calibration.px : 0;
-    if (res.mode === 'brownfield') {
-      state.existingBoxes.forEach((b, i) => {
-        rows.push(['E' + (i + 1), '已有', '', (b.x * mPerPx).toFixed(1), (b.y * mPerPx).toFixed(1), '', '']);
-      });
-    }
-    for (const b of res.boxes) {
-      rows.push([b.id, '新增', b.assigned.length, b.xM, b.yM, b.entM == null ? '' : b.entM, b.assigned.map((i) => i + 1).join(';')]);
-    }
-    const csv = '\uFEFF' + rows.map((r) => r.map((c) => '"' + String(c).replace(/"/g, '""') + '"').join(',')).join('\r\n');
+    const csv = FiberCore.buildCSV({
+      result: res,
+      households: state.households,
+      existingBoxes: state.existingBoxes,
+      poleSpacing: state.params.poleSpacing,
+      mPerPx: mPerPx
+    });
     download(csv, '分纤箱布点清单.csv', 'text/csv;charset=utf-8');
   }
 
@@ -678,7 +770,9 @@
       imageH: state.imageH,
       calibration: state.calibration,
       roads: state.roads,
+      inferredRoadIndexes: state.inferredRoadIndexes,
       households: state.households,
+      roadReviewDistance: state.roadReviewDistance,
       entrance: state.entrance,
       existingBoxes: state.existingBoxes,
       cadPolePoints: state.cadPolePoints,
@@ -690,12 +784,12 @@
   }
 
   let saveTimer = null;
-  function autosave() {
+  function autosave(silent) {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       try {
         localStorage.setItem(SAVE_KEY, serialize());
-        if ($('statusBar')) $('statusBar').textContent = '工程已自动保存。';
+        if (!silent && $('statusBar')) $('statusBar').textContent = '工程已自动保存。';
       } catch (err) {
         console.warn('自动保存失败（可能图片过大）', err);
         if ($('statusBar')) $('statusBar').textContent = '自动保存失败，请点击“保存工程”下载 JSON。';
@@ -746,7 +840,11 @@
       if (!Array.isArray(road) || road.length < 2) throw new Error('第' + (i + 1) + '段道路无效');
       return road.map((p) => point(p, '道路'));
     }) : [];
+    const inferredRoadIndexes = normalizeInferredRoadIndexes(data.inferredRoadIndexes, roads.length);
     const households = Array.isArray(data.households) ? data.households.map((p) => point(p, '户点')) : [];
+    const roadReviewDistance = Number(data.roadReviewDistance) > 0
+      ? Math.min(1000000, Math.max(0.1, Number(data.roadReviewDistance)))
+      : null;
     const existingBoxes = Array.isArray(data.existingBoxes) ? data.existingBoxes.map((p) => point(p, '已有箱')) : [];
     const calibration = data.calibration || null;
     if (calibration && (!(Number(calibration.px) > 0) || !(Number(calibration.meters) > 0))) {
@@ -786,7 +884,9 @@
       imageH: Number(data.imageH) > 0 ? Number(data.imageH) : 0,
       calibration: calibration,
       roads: roads,
+      inferredRoadIndexes: inferredRoadIndexes,
       households: households,
+      roadReviewDistance: roadReviewDistance,
       entrance: data.entrance ? point(data.entrance, '进村点') : null,
       existingBoxes: existingBoxes,
       cadPolePoints: Array.isArray(data.cadPolePoints) ? data.cadPolePoints.map((p) => point(p, 'CAD杆位')) : [],
@@ -805,7 +905,9 @@
     state.image = null;
     state.calibration = project.calibration;
     state.roads = project.roads;
+    state.inferredRoadIndexes = project.inferredRoadIndexes;
     state.households = project.households;
+    state.roadReviewDistance = project.roadReviewDistance;
     state.entrance = project.entrance;
     state.existingBoxes = project.existingBoxes;
     state.cadPolePoints = project.cadPolePoints;
@@ -850,7 +952,9 @@
         state.imageH = img.naturalHeight;
         state.calibration = null;
         state.roads = [];
+        state.inferredRoadIndexes = [];
         state.households = [];
+        state.roadReviewDistance = null;
         state.entrance = null;
         state.existingBoxes = [];
         state.cadPolePoints = [];
@@ -867,44 +971,188 @@
     reader.readAsDataURL(file);
   }
 
-  function cleanCadText(value) {
-    return String(value || '').replace(/\\P/g, ' ').replace(/[{}]/g, '').replace(/\s+/g, '').trim();
+  function captureWorkspace() {
+    return { state: Object.assign({}, state), view: Object.assign({}, view) };
   }
 
-  function snapRoadEndpoints(roads, tolerance) {
-    const refs = [];
-    for (const road of roads) {
-      if (road.length >= 2) {
-        refs.push(road[0], road[road.length - 1]);
-      }
+  function restoreWorkspace(snapshot) {
+    Object.assign(state, snapshot.state);
+    Object.assign(view, snapshot.view);
+    $('paramDistance').value = state.params.maxDistance;
+    $('paramCapacity').value = state.params.capacity;
+    $('paramPole').value = state.params.poleSpacing;
+    $('modeSelect').value = state.mode;
+    renderResults();
+    updateStatus();
+    draw();
+  }
+
+  function populateLayerSelect(id, layers, selected) {
+    const select = $(id);
+    select.textContent = '';
+    const automatic = document.createElement('option');
+    automatic.value = '';
+    automatic.textContent = '自动识别';
+    select.appendChild(automatic);
+    for (const layer of layers) {
+      const option = document.createElement('option');
+      option.value = layer;
+      option.textContent = layer;
+      select.appendChild(option);
     }
-    const segments = roads.flatMap((road) => road.slice(1).map((p, i) => [road[i], p]));
-    for (const ref of refs) {
-      for (const [a, b] of segments) {
-        if (a === ref || b === ref) continue;
-        const vx = b.x - a.x, vy = b.y - a.y;
-        const len2 = vx * vx + vy * vy;
-        if (!len2) continue;
-        const t = Math.max(0, Math.min(1, ((ref.x - a.x) * vx + (ref.y - a.y) * vy) / len2));
-        const x = a.x + t * vx, y = a.y + t * vy;
-        if (Math.hypot(ref.x - x, ref.y - y) <= tolerance) {
-          ref.x = x;
-          ref.y = y;
-          break;
+    select.value = selected || '';
+  }
+
+  function selectedDxfLayers() {
+    return {
+      roadLayer: $('dxfRoadLayer').value,
+      roadMode: $('dxfRoadMode').value,
+      houseLayer: $('dxfHouseLayer').value,
+      boxLayer: $('dxfBoxLayer').value,
+      plannedBoxLayer: $('dxfPlannedBoxLayer').value,
+      poleLayer: $('dxfPoleLayer').value,
+      houseBlockNames: $('dxfHouseBlocks').value,
+      existingBoxBlockNames: $('dxfExistingBoxBlocks').value,
+      plannedBoxBlockNames: $('dxfPlannedBoxBlocks').value,
+      poleBlockNames: $('dxfPoleBlocks').value,
+      entranceBlockNames: $('dxfEntranceBlocks').value,
+      reviewDistance: clampNum(parseFloat($('dxfReviewDistance').value), 0.1, 1000000, 30)
+    };
+  }
+
+  function countRoadComponents(roads) {
+    if (!roads.length) return 0;
+    const graph = FiberCore.buildRoadGraph(roads, 1);
+    const adj = Array.from({ length: graph.nodes.length }, () => []);
+    for (const edge of graph.edges) {
+      adj[edge.a].push(edge.b);
+      adj[edge.b].push(edge.a);
+    }
+    const seen = new Uint8Array(graph.nodes.length);
+    let components = 0;
+    for (let i = 0; i < graph.nodes.length; i++) {
+      if (seen[i]) continue;
+      components++;
+      const stack = [i];
+      seen[i] = 1;
+      while (stack.length) {
+        const node = stack.pop();
+        for (const next of adj[node]) {
+          if (!seen[next]) {
+            seen[next] = 1;
+            stack.push(next);
+          }
         }
       }
     }
-    for (let i = 0; i < refs.length; i++) {
-      for (let j = i + 1; j < refs.length; j++) {
-        if (Math.hypot(refs[i].x - refs[j].x, refs[i].y - refs[j].y) <= tolerance) {
-          const x = (refs[i].x + refs[j].x) / 2;
-          const y = (refs[i].y + refs[j].y) / 2;
-          refs[i].x = x; refs[i].y = y;
-          refs[j].x = x; refs[j].y = y;
-        }
-      }
+    return components;
+  }
+
+  function applyDxfPreview(candidate) {
+    state.image = null;
+    state.imageDataURL = null;
+    state.imageW = candidate.imageW;
+    state.imageH = candidate.imageH;
+    state.calibration = null;
+    state.roads = candidate.roads;
+    state.inferredRoadIndexes = normalizeInferredRoadIndexes(candidate.inferredRoadIndexes, candidate.roads.length);
+    state.households = candidate.households;
+    state.roadReviewDistance = candidate.roadReviewDistance;
+    state.entrance = candidate.entrance;
+    state.existingBoxes = candidate.existingBoxes;
+    state.cadPolePoints = candidate.polePoints;
+    state.cadPlannedBoxes = candidate.plannedBoxes;
+    state.mode = candidate.existingBoxes.length ? 'brownfield' : 'greenfield';
+    $('modeSelect').value = state.mode;
+    state.currentRoad = [];
+    state.calibP1 = null;
+    state.calibStart = null;
+    state.results = null;
+    state.history = [];
+    fitView();
+    renderResults();
+    updateStatus();
+    draw();
+  }
+
+  function renderDxfImportSummary(candidate) {
+    const stats = candidate.stats;
+    const components = countRoadComponents(candidate.roads);
+    candidate.stats.roadComponents = components;
+    let html = '<div>户点 <strong>' + stats.householdCount + '</strong>；道路 <strong>' + stats.roadCount +
+      '</strong> 段；路网分量 <strong>' + components + '</strong></div>';
+    html += '<div>入口 ' + (stats.entranceFound ? '已识别' : '未识别') +
+      '；已有箱 ' + stats.existingBoxCount + '；新设箱参考 ' + stats.plannedBoxCount +
+      '；杆位参考 ' + stats.poleCount + '</div>';
+    html += '<div>双边线中心线 ' + stats.pairedRoadCount + ' 段；直接道路 ' + stats.directRoadCount +
+      ' 段；缺口补桥 ' + stats.bridgedRoadCount + ' 段</div>';
+    if (stats.arcRoadCount || stats.ignoredArcCount) {
+      html += '<div>圆弧中心线 ' + stats.arcRoadCount + ' 段；未直接采用的道路层圆弧 ' +
+        stats.ignoredArcCount + ' 段</div>';
     }
-    return roads;
+    const blockRuleTotal = stats.houseBlockRuleCount + stats.existingBoxBlockRuleCount +
+      stats.plannedBoxBlockRuleCount + stats.poleBlockRuleCount + stats.entranceBlockRuleCount;
+    if (blockRuleTotal) {
+      html += '<div>图块名规则：民房 ' + stats.houseBlockRuleCount + '；已有箱 ' +
+        stats.existingBoxBlockRuleCount + '；新设箱 ' + stats.plannedBoxBlockRuleCount +
+        '；电杆 ' + stats.poleBlockRuleCount + '；进村点 ' + stats.entranceBlockRuleCount + '</div>';
+    }
+    const medianRoadDistance = formatDrawingDistance(stats.householdRoadMedianDistance);
+    const maxRoadDistance = formatDrawingDistance(stats.householdRoadMaxDistance);
+    html += '<div>户点到路网：阈值内 <strong>' + stats.householdsWithinRoadReview + ' / ' +
+      stats.householdCount + '</strong>（≤ ' + formatDrawingDistance(candidate.roadReviewDistance) +
+      ' 图纸单位）；中位 ' + medianRoadDistance + '；最远 ' + maxRoadDistance + '</div>';
+    if (!stats.roadCount) html += '<div class="warning">未识别到道路，请指定道路图层后重新识别。</div>';
+    else if (components > 1) html += '<div class="warning">路网仍有 ' + components + ' 个断开的分量，请复核或手工连接。</div>';
+    if (stats.roadCount && stats.householdsFarFromRoad) {
+      html += '<div class="warning">有 ' + stats.householdsFarFromRoad +
+        ' 个户点远离当前路网，已在画布上加红圈；请检查漏识别道路或误识别户点。</div>';
+    }
+    $('dxfImportSummary').innerHTML = html;
+  }
+
+  function formatDrawingDistance(value) {
+    if (!Number.isFinite(Number(value))) return '—';
+    return String(Math.round(Number(value) * 10) / 10);
+  }
+
+  function runDxfRecognition(options) {
+    const candidate = CadImport.recognize(pendingDxfImport.parsed, options);
+    pendingDxfImport.options = options;
+    pendingDxfImport.candidate = candidate;
+    applyDxfPreview(candidate);
+    renderDxfImportSummary(candidate);
+    $('statusBar').textContent = '正在预览 DXF 识别结果；确认后才会保存到工程。';
+  }
+
+  function rerunDxfRecognition() {
+    if (!pendingDxfImport) return;
+    try {
+      runDxfRecognition(selectedDxfLayers());
+    } catch (err) {
+      alert('重新识别失败：' + err.message);
+    }
+  }
+
+  function confirmDxfImport() {
+    if (!pendingDxfImport) return;
+    const candidate = pendingDxfImport.candidate;
+    pendingDxfImport = null;
+    $('dxfImportModal').classList.add('hidden');
+    autosave(true);
+    $('statusBar').textContent = 'DXF 已确认导入：民房 ' + candidate.households.length +
+      ' 户；道路 ' + candidate.roads.length + ' 段；路网分量 ' + candidate.stats.roadComponents +
+      '；离路复核 ' + candidate.stats.householdsFarFromRoad + ' 户。请人工复核并校准比例。';
+  }
+
+  function cancelDxfImport() {
+    if (!pendingDxfImport) return;
+    const before = pendingDxfImport.before;
+    pendingDxfImport = null;
+    $('dxfImportModal').classList.add('hidden');
+    restoreWorkspace(before);
+    autosave(true);
+    $('statusBar').textContent = '已取消 DXF 导入，原工程未被替换。';
   }
 
   function loadDxfFile(file) {
@@ -912,139 +1160,31 @@
     reader.onload = () => {
       try {
         const parsed = DxfLite.parse(reader.result);
-        const textEntities = parsed.entities.filter((e) => e.type === 'TEXT' || e.type === 'MTEXT');
-        const houses = textEntities
-          .filter((e) => cleanCadText(e.text) === '民房' && Number.isFinite(e.x) && Number.isFinite(e.y))
-          .map((e) => ({ x: e.x, y: e.y }));
-        const roadLabels = textEntities
-          .filter((e) => cleanCadText(e.text) === '道路' && Number.isFinite(e.x) && Number.isFinite(e.y))
-          .map((e) => ({ x: e.x, y: e.y }));
-        const sourceLabel = textEntities.find((e) => /光交|配线层/.test(String(e.text || '')) &&
-          Number.isFinite(e.x) && Number.isFinite(e.y));
-        const boxLabels = textEntities.filter((e) => /^分纤箱编号[:：]/.test(cleanCadText(e.text)) &&
-          Number.isFinite(e.x) && Number.isFinite(e.y));
-        const newBoxLabels = textEntities.filter((e) => /新设.*分纤箱/.test(cleanCadText(e.text)) &&
-          Number.isFinite(e.x) && Number.isFinite(e.y));
-        const poleLabels = textEntities.filter((e) => /^(电|原)P\d+/.test(cleanCadText(e.text)) &&
-          Number.isFinite(e.x) && Number.isFinite(e.y));
-        const isNearNewBox = (box) => newBoxLabels.some((n) => Math.hypot(n.x - box.x, n.y - box.y) <= 60);
-        const existingBoxLabels = boxLabels.filter((b) => !isNearNewBox(b));
-        const plannedBoxLabels = boxLabels.filter(isNearNewBox);
-        const geometries = parsed.entities
-          .filter((e) => (e.type === 'LINE' || e.type === 'LWPOLYLINE') && e.vertices && e.vertices.length >= 2)
-          .map((e) => ({ type: e.type, layer: e.layer || '0', width: Number(e.width) || 0, vertices: e.vertices }));
-        const semanticPoints = houses.concat(roadLabels, sourceLabel ? [sourceLabel] : [], boxLabels, poleLabels);
-        if (!semanticPoints.length) throw new Error('DXF 中没有找到可用的工程标注');
-        const semanticExtent = Math.max(
-          Math.max(...semanticPoints.map((p) => p.x)) - Math.min(...semanticPoints.map((p) => p.x)),
-          Math.max(...semanticPoints.map((p) => p.y)) - Math.min(...semanticPoints.map((p) => p.y))
-        ) || 1;
-        const minRoadLength = Math.max(30, semanticExtent * 0.05);
-        const lineInfos = geometries
-          .filter((g) => g.type === 'LINE')
-          .map((g, index) => {
-            const a = g.vertices[0], b = g.vertices[1];
-            const horizontal = Math.abs(b.x - a.x) >= Math.abs(b.y - a.y);
-            return {
-              index: index,
-              horizontal: horizontal,
-              a: a,
-              b: b,
-              length: Math.hypot(b.x - a.x, b.y - a.y),
-              axisMin: horizontal ? Math.min(a.x, b.x) : Math.min(a.y, b.y),
-              axisMax: horizontal ? Math.max(a.x, b.x) : Math.max(a.y, b.y),
-              fixed: horizontal ? (a.y + b.y) / 2 : (a.x + b.x) / 2
-            };
-          })
-          .filter((g) => g.length >= minRoadLength);
-        const usedLines = new Set();
-        const roadGeometries = [];
-        for (let i = 0; i < lineInfos.length; i++) {
-          if (usedLines.has(i)) continue;
-          const a = lineInfos[i];
-          let pair = -1;
-          let bestGap = Infinity;
-          for (let j = i + 1; j < lineInfos.length; j++) {
-            if (usedLines.has(j) || a.horizontal !== lineInfos[j].horizontal) continue;
-            const b = lineInfos[j];
-            const overlap = Math.min(a.axisMax, b.axisMax) - Math.max(a.axisMin, b.axisMin);
-            const gap = Math.abs(a.fixed - b.fixed);
-            if (overlap >= Math.min(a.length, b.length) * 0.55 && gap <= 12 && gap < bestGap) {
-              pair = j;
-              bestGap = gap;
-            }
-          }
-          if (pair >= 0) {
-            const b = lineInfos[pair];
-            const start = Math.max(a.axisMin, b.axisMin);
-            const end = Math.min(a.axisMax, b.axisMax);
-            const fixed = (a.fixed + b.fixed) / 2;
-            roadGeometries.push({
-              vertices: a.horizontal
-                ? [{ x: start, y: fixed }, { x: end, y: fixed }]
-                : [{ x: fixed, y: start }, { x: fixed, y: end }]
-            });
-            usedLines.add(i);
-            usedLines.add(pair);
-          }
-        }
-        // 没有成对边线的长线，只有靠近“道路”文字时才作为单线道路候选。
-        for (let i = 0; i < lineInfos.length; i++) {
-          if (usedLines.has(i)) continue;
-          const a = lineInfos[i];
-          const nearLabel = roadLabels.some((r) => {
-            const dx = a.horizontal
-              ? Math.max(a.axisMin - r.x, 0, r.x - a.axisMax)
-              : Math.abs(a.fixed - r.x);
-            const dy = a.horizontal
-              ? Math.abs(a.fixed - r.y)
-              : Math.max(a.axisMin - r.y, 0, r.y - a.axisMax);
-            return Math.hypot(dx, dy) <= Math.max(30, semanticExtent * 0.08);
-          });
-          if (nearLabel) roadGeometries.push({ vertices: [a.a, a.b] });
-        }
-        const points = semanticPoints.concat(roadGeometries.flatMap((g) => g.vertices));
-        const minX = Math.min(...points.map((p) => p.x));
-        const maxX = Math.max(...points.map((p) => p.x));
-        const minY = Math.min(...points.map((p) => p.y));
-        const maxY = Math.max(...points.map((p) => p.y));
-        const toCanvas = (p) => ({ x: p.x - minX + 40, y: maxY - p.y + 40 });
-        const roads = snapRoadEndpoints(
-          roadGeometries.map((g) => g.vertices.map(toCanvas)),
-          Math.max(5, Math.min(12, semanticExtent * 0.02))
-        );
-        const households = houses.map(toCanvas);
-        const existingBoxes = existingBoxLabels.map(toCanvas);
-        const plannedBoxes = plannedBoxLabels.map(toCanvas);
-        const polePoints = poleLabels.map(toCanvas);
-        state.image = null;
-        state.imageDataURL = null;
-        state.imageW = maxX - minX + 80;
-        state.imageH = maxY - minY + 80;
-        state.calibration = null;
-        state.roads = roads;
-        state.households = households;
-        state.entrance = sourceLabel ? toCanvas(sourceLabel) : null;
-        state.existingBoxes = existingBoxes;
-        state.cadPolePoints = polePoints;
-        state.cadPlannedBoxes = plannedBoxes;
-        state.mode = existingBoxes.length ? 'brownfield' : 'greenfield';
-        $('modeSelect').value = state.mode;
-        state.currentRoad = [];
-        state.calibP1 = null;
-        state.calibStart = null;
-        state.results = null;
-        state.history = [];
-        fitView();
-        invalidate();
-        const roadMessage = roadGeometries.length
-          ? '已配对道路边线并生成 ' + roadGeometries.length + ' 段中心线候选'
-          : '未能自动确定道路几何，请手动画路网';
-        $('statusBar').textContent = 'DXF 已导入：民房 ' + households.length + ' 户；' + roadMessage +
-          '；入口 ' + (state.entrance ? '已识别' : '未识别') +
-          '；已有箱 ' + existingBoxes.length + '；杆位参考 ' + polePoints.length +
-          '。请复核道路并校准比例。';
+        const layers = Array.from(new Set(parsed.entities.map((entity) => entity.layer || '0'))).sort();
+        clearTimeout(saveTimer);
+        saveTimer = null;
+        pendingDxfImport = {
+          parsed: parsed,
+          fileName: file.name,
+          before: captureWorkspace(),
+          options: {},
+          candidate: null
+        };
+        $('dxfImportFile').textContent = file.name;
+        populateLayerSelect('dxfRoadLayer', layers, '');
+        $('dxfRoadMode').value = 'auto';
+        populateLayerSelect('dxfHouseLayer', layers, '');
+        populateLayerSelect('dxfBoxLayer', layers, '');
+        populateLayerSelect('dxfPlannedBoxLayer', layers, '');
+        populateLayerSelect('dxfPoleLayer', layers, '');
+        $('dxfReviewDistance').value = '30';
+        ['dxfHouseBlocks', 'dxfExistingBoxBlocks', 'dxfPlannedBoxBlocks', 'dxfPoleBlocks', 'dxfEntranceBlocks']
+          .forEach((id) => { $(id).value = ''; });
+        runDxfRecognition({});
+        $('dxfImportModal').classList.remove('hidden');
       } catch (err) {
+        if (pendingDxfImport) restoreWorkspace(pendingDxfImport.before);
+        pendingDxfImport = null;
         alert('DXF 导入失败：' + err.message);
       }
     };
@@ -1133,7 +1273,9 @@
     img.onload = () => {
       state.image = img;
       state.roads = roads;
+      state.inferredRoadIndexes = [];
       state.households = households;
+      state.roadReviewDistance = null;
       state.entrance = { x: 60, y: 400 };
       state.existingBoxes = [];
       state.calibration = { px: 200, meters: 100, p1: { x: 60, y: 400 }, p2: { x: 260, y: 400 } };
@@ -1161,7 +1303,8 @@
     entrance: '点击光缆进村的位置（一个点）。',
     box: '点击已有分纤箱的位置（有箱补点模式用；可点多个）。',
     calib: '沿地图自带比例尺（或任意已知距离）点两个点，然后输入实际米数。',
-    pan: '按住左键拖动平移；滚轮在任何工具下都可缩放。'
+    pan: '按住左键拖动平移；滚轮在任何工具下都可缩放。',
+    erase: '点击删除最近的误识别户点、整段道路、入口、已有箱或 CAD 参考点；可撤销。'
   };
 
   function updateHelp() {
@@ -1170,8 +1313,11 @@
 
   function updateStatus() {
     const calib = state.calibration ? '校准' + state.calibration.meters + 'm' : '未校准';
+    const roadAudit = currentHouseholdRoadAudit();
     $('statusBar').textContent =
       '路网 ' + state.roads.length + ' 段 | 户点 ' + state.households.length +
+      (state.inferredRoadIndexes.length ? ' | 推断补桥 ' + state.inferredRoadIndexes.length + ' 段' : '') +
+      (roadAudit && roadAudit.farIndexes.length ? ' | 离路复核 ' + roadAudit.farIndexes.length + ' 户' : '') +
       ' | 进村点 ' + (state.entrance ? '已标' : '未标') +
       ' | 已有箱 ' + state.existingBoxes.length + ' | ' + calib +
       ' | 模式：' + (state.mode === 'brownfield' ? '有箱补点' : '无箱新建');

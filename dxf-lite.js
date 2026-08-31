@@ -1,4 +1,4 @@
-/* 本地 DXF 导入器：只解析当前工程需要的 TEXT、MTEXT、LINE、LWPOLYLINE、INSERT */
+/* 本地 DXF 导入器：只解析当前工程需要的 TEXT、MTEXT、LINE、LWPOLYLINE、ARC、INSERT */
 (function (global) {
   'use strict';
 
@@ -37,7 +37,10 @@
         if (i + 1 < end && pairs[i + 1].code === 21) entity.y2 = pairs[i + 1].value;
       } else if (p.code === 20 && entity.y == null) entity.y = p.value;
       else if (p.code === 21 && entity.y2 == null) entity.y2 = p.value;
+      else if (p.code === 40 && entity.type === 'ARC') entity.radius = p.value;
       else if (p.code === 43) entity.width = p.value;
+      else if (p.code === 50 && entity.type === 'ARC') entity.startAngle = p.value;
+      else if (p.code === 51 && entity.type === 'ARC') entity.endAngle = p.value;
       else if (p.code === 70) entity.flags = p.value;
     }
     if (entity.type === 'LWPOLYLINE') {
@@ -72,7 +75,7 @@
       let end = i + 1;
       while (end < pairs.length && pairs[end].code !== 0) end++;
       const type = pairs[i].value;
-      if (['TEXT', 'MTEXT', 'LINE', 'LWPOLYLINE', 'INSERT'].includes(type)) {
+      if (['TEXT', 'MTEXT', 'LINE', 'LWPOLYLINE', 'ARC', 'INSERT'].includes(type)) {
         entities.push(parseEntity(pairs, i, end));
       }
       i = end - 1;
