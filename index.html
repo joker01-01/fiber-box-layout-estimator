@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>分纤箱布点估算工具</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">⌁</div>
+      <div>
+        <p class="eyebrow">FIELD ESTIMATE / LOCAL WORKSPACE</p>
+        <h1>分纤箱布点 <span>估算台</span></h1>
+      </div>
+    </div>
+    <div class="header-actions">
+      <div class="file-actions" aria-label="工程文件">
+        <button id="btnUpload" class="button button-primary"><span class="button-icon">＋</span>导入地图</button>
+        <input type="file" id="fileImage" accept="image/*" hidden>
+        <button id="btnUploadDxf" class="button button-quiet">导入 DXF</button>
+        <input type="file" id="fileDxf" accept=".dxf,application/dxf,text/plain" hidden>
+        <button id="btnDemo" class="button button-quiet">示例村</button>
+        <button id="btnOpen" class="button button-quiet">打开工程</button>
+        <input type="file" id="fileProject" accept=".json,application/json" hidden>
+        <button id="btnSave" class="button button-quiet">保存 JSON</button>
+      </div>
+      <button id="btnClearAll" class="button button-danger">清空工程</button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="tool-panel panel-scroll">
+      <section class="panel-section tool-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">01 / ANNOTATE</p>
+            <h2>现场标注</h2>
+          </div>
+          <span class="section-badge">MAP</span>
+        </div>
+        <div class="tools" role="toolbar" aria-label="标注工具">
+          <button data-tool="road" class="tool-btn tool-road active" aria-pressed="true"><span class="tool-dot"></span><span><strong>路网</strong><small>沿道路描线</small></span></button>
+          <button data-tool="house" class="tool-btn tool-house" aria-pressed="false"><span class="tool-dot"></span><span><strong>户点</strong><small>一户一个点</small></span></button>
+          <button data-tool="entrance" class="tool-btn tool-entrance" aria-pressed="false"><span class="tool-dot"></span><span><strong>进村点</strong><small>光缆入口</small></span></button>
+          <button data-tool="box" class="tool-btn tool-box" aria-pressed="false"><span class="tool-dot"></span><span><strong>已有箱</strong><small>补点模式</small></span></button>
+          <button data-tool="calib" class="tool-btn tool-calib" aria-pressed="false"><span class="tool-dot"></span><span><strong>比例校准</strong><small>建立米制</small></span></button>
+          <button data-tool="pan" class="tool-btn tool-pan" aria-pressed="false"><span class="tool-dot"></span><span><strong>平移</strong><small>查看地图</small></span></button>
+        </div>
+        <div class="tool-actions">
+          <button id="btnUndo" class="button button-outline">撤销</button>
+          <button id="btnFinishRoad" class="button button-accent">完成当前路</button>
+        </div>
+        <div class="cleanup-actions">
+          <button id="btnClearRoads">清空路网</button>
+          <button id="btnClearHouses">清空户点</button>
+          <button id="btnClearBoxes">清空已有箱</button>
+          <button id="btnClearCalib">清空校准</button>
+        </div>
+        <div class="help-card">
+          <span class="help-mark">i</span>
+          <p id="helpText" class="help-text"></p>
+        </div>
+      </section>
+
+      <section class="panel-section parameter-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">02 / RULES</p>
+            <h2>估算规则</h2>
+          </div>
+          <span class="section-badge">METER</span>
+        </div>
+        <div class="field-grid">
+          <label class="field">
+            <span>覆盖距离</span>
+            <div class="input-wrap"><input type="number" id="paramDistance" value="100" min="1" max="1000"><em>m</em></div>
+          </label>
+          <label class="field">
+            <span>每箱户数</span>
+            <div class="input-wrap"><input type="number" id="paramCapacity" value="16" min="1" max="200"><em>户</em></div>
+          </label>
+          <label class="field">
+            <span>杆距</span>
+            <div class="input-wrap"><input type="number" id="paramPole" value="50" min="1" max="200"><em>m</em></div>
+          </label>
+        </div>
+        <label class="field mode-field">
+          <span>估算模式</span>
+          <select id="modeSelect">
+            <option value="greenfield">无箱新建 / GREENFIELD</option>
+            <option value="brownfield">有箱补点 / BROWNFIELD</option>
+          </select>
+        </label>
+        <button id="btnCalc" class="button button-calculate"><span>计算布点</span><span aria-hidden="true">→</span></button>
+      </section>
+    </aside>
+
+    <div id="canvasWrap" class="map-stage">
+      <div class="map-plate">
+        <span class="map-label map-label-top">ORTHO / PLAN VIEW</span>
+        <span class="map-label map-label-right">N ↑</span>
+        <span class="map-crosshair crosshair-a"></span>
+        <span class="map-crosshair crosshair-b"></span>
+      </div>
+      <canvas id="mapCanvas"></canvas>
+      <div class="map-legend" aria-label="图例">
+        <span><i class="legend-road"></i>路网</span>
+        <span><i class="legend-house"></i>户点</span>
+        <span><i class="legend-box"></i>箱位</span>
+        <span><i class="legend-cable"></i>光缆</span>
+      </div>
+      <div id="statusBar"></div>
+    </div>
+
+    <aside class="result-panel panel-scroll">
+      <section class="panel-section result-section">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">03 / CHECK</p>
+            <h2>估算结果</h2>
+          </div>
+          <span class="result-pulse" aria-hidden="true"></span>
+        </div>
+        <div id="resultSummary" class="result-summary"></div>
+        <div id="resultTable" class="result-table"></div>
+        <div class="export-block">
+          <p class="export-label">输出文件</p>
+          <div class="export-actions">
+            <button id="btnPng" class="export-button"><span class="export-icon">▧</span><span>标注图<small>PNG</small></span></button>
+            <button id="btnCsv" class="export-button"><span class="export-icon">≡</span><span>工程清单<small>CSV</small></span></button>
+            <button id="btnDxf" class="export-button"><span class="export-icon">⌗</span><span>示意 CAD<small>DXF</small></span></button>
+          </div>
+        </div>
+      </section>
+      <section class="panel-section note-section">
+        <p class="section-kicker">WORKFLOW NOTE</p>
+        <p>先完成比例校准，再描路、点户，最后计算布点。所有数据仅保存在本机浏览器。</p>
+      </section>
+    </aside>
+  </main>
+
+  <div id="calibModal" class="modal hidden">
+    <div class="modal-box">
+      <h3>比例校准</h3>
+      <p>参考线长度：<span id="calibPx">0</span> 像素</p>
+      <label>实际距离（米）<input type="number" id="calibMeters" value="100" min="1"></label>
+      <div class="row">
+        <button id="calibOk" class="primary">确定</button>
+        <button id="calibCancel">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="core.js"></script>
+  <script src="dxf-lite.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
