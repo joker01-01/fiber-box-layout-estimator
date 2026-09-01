@@ -1,5 +1,12 @@
 # 分纤箱布点估算工具
 
+![运行方式: 本地浏览器](https://img.shields.io/badge/运行方式-本地浏览器-0A7E8C?style=flat-square)
+![技术栈: Vanilla JS](https://img.shields.io/badge/技术栈-Vanilla%20JS-F7DF1E?style=flat-square)
+![平台: Chrome | Edge](https://img.shields.io/badge/平台-Chrome%20%7C%20Edge-1A73E8?style=flat-square)
+![输入: 图片 | DXF](https://img.shields.io/badge/输入-图片%20%7C%20DXF-5C6BC0?style=flat-square)
+![输出: PNG | CSV | DXF | JSON](https://img.shields.io/badge/输出-PNG%20%7C%20CSV%20%7C%20DXF%20%7C%20JSON-2EA44F?style=flat-square)
+![网络: 无需联网](https://img.shields.io/badge/网络-无需联网-6A1B9A?style=flat-square)
+
 本地单机网页工具：从村庄地图或客户 DWG 转换出的 DXF 中提取民房、道路、进村点和已有箱，人工复核后自动估算分纤箱数量、杆数和主干光缆长度，并输出 PNG、CSV、DXF 和工程 JSON。
 
 ## 使用
